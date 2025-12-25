@@ -1,4 +1,5 @@
 import * as net from 'net';
+
 type TCPConn = {
     socket: net.Socket;
     err: null | Error;
@@ -8,6 +9,17 @@ type TCPConn = {
         reject: (reason: Error) => void,
     };
 };
+
+type TCPListener = {
+    server: net.Server;
+    err: null | Error;
+    accepter: null | {
+        resolve: (conn: TCPConn) => void,
+        reject: (reason: Error) => void,
+    };
+};
+
+
 
 function soInit(socket: net.Socket): TCPConn {
     const conn: TCPConn = {
@@ -72,8 +84,7 @@ function soWrite(conn: TCPConn, data: Buffer): Promise<void> {
     });
 }
 
-async function serveClient(socket: net.Socket) {
-    const conn: TCPConn = soInit(socket);
+async function serveClient(conn: TCPConn): Promise<void> {
     while(true){
         const data = await soRead(conn);
         if(data.length === 0){
@@ -85,19 +96,50 @@ async function serveClient(socket: net.Socket) {
     }    
 }
 
-async function newConn(socket: net.Socket): Promise<void> {
-    console.log('new connection', socket.remoteAddress, socket.remotePort);
-    try{
-        await serveClient(socket);
-    } catch(exc){
-        console.log('exception:', exc);
-    } finally{
-        socket.destroy();
-    }
+ function soListen(host: string, port: number): TCPListener {
+    let server = net.createServer({ pauseOnConnect: true });
 
+    const listener: TCPListener = {
+        server,
+        err: null,
+        accepter: null
+    } 
+
+    server.on('connection', (socket: net.Socket) => {
+        console.assert(listener.accepter);
+        const conn = soInit(socket);
+        listener.accepter!.resolve(conn)
+        listener.accepter = null;
+    })
+
+    server.on('error', (err: Error) => {
+        listener.err = err;
+        if(listener.accepter){
+            listener.accepter.reject(err);
+            listener.accepter = null;
+        }
+    })
+    server.listen({host, port})
+    return listener
+    
 }
 
-let server = net.createServer({ pauseOnConnect: true });
-server.on('connection', newConn);
-server.on('error', (err: Error) => { throw err; });
-server.listen({ host: '127.0.0.1', port: 1234 });
+function soAccept(listener: TCPListener): Promise<TCPConn>{
+    console.assert(!listener.accepter);
+    return new Promise((resolve, reject) =>{
+        if(listener.err){
+            reject(listener.err);
+            return;
+        }
+        listener.accepter = {resolve, reject};
+    })
+}
+
+const listener = soListen('127.0.0.1',  1234);
+
+while(true){
+    const conn = await soAccept(listener);
+    serveClient(conn).catch(err => {
+        console.error('client error:', err)
+    });
+}
